@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+runtime/audit/*
+runtime/cache/*
+.DS_Store
