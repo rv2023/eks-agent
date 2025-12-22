@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BedrockListModels",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockInvoke",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

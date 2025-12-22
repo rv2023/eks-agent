@@ -1,15 +1,12 @@
-# REQUIRED: Fill this with enabled components.
-# If empty/incomplete, the agent must refuse to recommend non-listed components.
-
-version: 1
 categories:
-  ingress_gateway: []
-  service_mesh: []
-  observability: []
-  logging: []
-  secrets_management: []
-  cicd_gitops: []
-  policy: []
-  autoscaling: []
-  runtime_security: []
-private_components: []
+  ingress_gateway:
+    - nginx-ingress
+  observability:
+    - prometheus
+    - grafana
+  logging:
+    - fluent-bit
+  secrets_management:
+    - kubernetes-secrets
+  autoscaling:
+    - hpa
