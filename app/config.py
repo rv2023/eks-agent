@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
+    max_phase2_iterations: int = 5
+    max_ask_loops: int = 10
     aws_region: str = os.getenv("AWS_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
     bedrock_model_id: str = os.getenv(

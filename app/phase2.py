@@ -1,8 +1,11 @@
 # app/phase2.py
-from typing import List, Optional
+from typing import List, Optional, Literal
+
 from app.agent_planner import ToolPlan, ToolCommand
 
-# ---- Phase 2 Contract ----
+# ======================================================
+# Phase 2 Contract
+# ======================================================
 
 REQUIRED_GROUNDING = [
     "grounding.pods",
@@ -13,11 +16,39 @@ REQUIRED_GROUNDING = [
     "grounding.crds",
 ]
 
+Plane = Literal[
+    "WORKLOAD",
+    "NETWORK",
+    "CONTROL_PLANE",
+    "NODE",
+    "EXTERNAL",
+]
+
+# ======================================================
+# Helpers
+# ======================================================
+
 def _iter_evidence(store):
+    """Iterate immutable Tier-2 evidence."""
     return store.items
 
 
-def generic_grounding_missing(store, namespace: str):
+def _get_ev(store, summary: str, namespace: str | None = None):
+    """Return first matching evidence entry (deterministic)."""
+    for ev in _iter_evidence(store):
+        if ev.summary == summary:
+            if namespace is None or ev.meta.get("namespace") == namespace:
+                return ev
+    return None
+
+# ======================================================
+# Generic grounding
+# ======================================================
+
+def generic_grounding_missing(store, namespace: str) -> list[str]:
+    """
+    Determine which generic grounding summaries are missing.
+    """
     present = set()
 
     for ev in _iter_evidence(store):
@@ -43,10 +74,8 @@ def generic_grounding_missing(store, namespace: str):
 
 def grounding_commands(namespace: str) -> List[ToolCommand]:
     """
-    Deterministic mapping from missing grounding evidence
-    to read-only kubectl commands.
+    Deterministic mapping from grounding evidence to read-only commands.
     """
-
     return [
         ToolCommand(
             title="Pods",
@@ -86,10 +115,16 @@ def grounding_commands(namespace: str) -> List[ToolCommand]:
         ),
     ]
 
+# ======================================================
+# Phase 2 Orchestrator
+# ======================================================
 
 def phase2_plan(store, namespace: str = "default") -> Optional[ToolPlan]:
     """
-    Phase 2 orchestrator.
+    Phase 2 planner.
+    - READ-ONLY
+    - Deterministic
+    - Idempotent
     """
 
     # 1. Enforce generic grounding
@@ -100,34 +135,28 @@ def phase2_plan(store, namespace: str = "default") -> Optional[ToolPlan]:
             commands=grounding_commands(namespace),
         )
 
-    # 2. Detect plane
+    # 2. Detect plane (grounding-only)
     plane = detect_plane(store, namespace)
 
     # 3. WORKLOAD ladder
     if plane == "WORKLOAD":
         pods_ev = _get_ev(store, "grounding.pods", namespace)
-        failing = _failing_pods(pods_ev)
+        failing_pods = _failing_pods(pods_ev)
 
-        missing = workload_missing(store, namespace, failing)
-        if missing:
-            return ToolPlan(
-                missing=missing,
-                commands=workload_commands(namespace, failing),
-            )
+        if failing_pods:
+            missing = workload_missing(store, namespace)
+            if missing:
+                return ToolPlan(
+                    missing=missing,
+                    commands=workload_commands(namespace, failing_pods),
+                )
 
     # 4. Phase 2 complete
     return None
 
-from typing import Literal
-
-Plane = Literal[
-    "WORKLOAD",
-    "NETWORK",
-    "CONTROL_PLANE",
-    "NODE",
-    "EXTERNAL",
-]
-
+# ======================================================
+# Plane detection
+# ======================================================
 
 def detect_plane(store, namespace: str) -> Plane:
     """
@@ -160,20 +189,14 @@ def detect_plane(store, namespace: str) -> Plane:
     # ---- Rule 5: EXTERNAL ----
     return "EXTERNAL"
 
-def _get_ev(store, summary: str, namespace: str | None = None):
-    for ev in _iter_evidence(store):
-        if ev.summary == summary:
-            if namespace is None or ev.meta.get("namespace") == namespace:
-                return ev
-    return None
+# ======================================================
+# Grounding analysis helpers
+# ======================================================
 
 def _nodes_unhealthy(nodes_ev) -> bool:
     if not nodes_ev:
         return False
-    for n in nodes_ev.raw.splitlines():
-        if "NotReady" in n:
-            return True
-    return False
+    return any("NotReady" in line for line in nodes_ev.raw.splitlines())
 
 
 def _crds_not_established(crds_ev) -> bool:
@@ -185,7 +208,7 @@ def _crds_not_established(crds_ev) -> bool:
 def _services_present(svc_ev) -> bool:
     if not svc_ev:
         return False
-    return "items" in svc_ev.raw and "name" in svc_ev.raw
+    return "items" in svc_ev.raw
 
 
 def _endpoints_empty(ep_ev) -> bool:
@@ -197,8 +220,10 @@ def _endpoints_empty(ep_ev) -> bool:
 def _pods_unhealthy(pods_ev) -> bool:
     if not pods_ev:
         return False
-    signals = ["CrashLoopBackOff", "ImagePullBackOff", "Pending"]
-    return any(s in pods_ev.raw for s in signals)
+    return any(
+        s in pods_ev.raw
+        for s in ["CrashLoopBackOff", "ImagePullBackOff", "Pending"]
+    )
 
 
 def _events_contain(events_ev, reasons: list[str]) -> bool:
@@ -206,32 +231,38 @@ def _events_contain(events_ev, reasons: list[str]) -> bool:
         return False
     return any(r in events_ev.raw for r in reasons)
 
-def _failing_pods(pods_ev):
+# ======================================================
+# Workload ladder
+# ======================================================
+
+def _failing_pods(pods_ev) -> list[str]:
     """
-    Extract pod names that appear unhealthy from grounding.pods raw output.
-    Very conservative string-based detection.
+    Extract unhealthy pod names (conservative string parsing).
     """
     if not pods_ev:
         return []
 
-    failing = []
+    failing = set()
     for line in pods_ev.raw.splitlines():
         if any(s in line for s in ["CrashLoopBackOff", "ImagePullBackOff", "Pending"]):
             parts = line.split()
             if parts:
-                failing.append(parts[0])  # pod name
-    return list(set(failing))
+                failing.add(parts[0])
+    return list(failing)
 
-def workload_missing(store, namespace: str, pods: list[str]):
+
+def workload_missing(store, namespace: str) -> list[str]:
     """
-    Check which workload ladder evidence is missing.
+    Determine missing workload-level evidence.
     """
     present = set()
 
     for ev in _iter_evidence(store):
-        if ev.summary in {"workload.pod_describe", "workload.container_logs"}:
-            if ev.meta.get("namespace") == namespace:
-                present.add(ev.summary)
+        if ev.summary in {
+            "workload.pod_describe",
+            "workload.container_logs",
+        } and ev.meta.get("namespace") == namespace:
+            present.add(ev.summary)
 
     missing = []
     if "workload.pod_describe" not in present:
@@ -241,13 +272,15 @@ def workload_missing(store, namespace: str, pods: list[str]):
 
     return missing
 
+
 def workload_commands(namespace: str, pods: list[str]) -> list[ToolCommand]:
     """
     Generate exact read-only commands for workload ladder.
+    One describe + one logs per failing pod.
     """
-    commands = []
+    commands: list[ToolCommand] = []
 
-    for pod in pods:
+    for pod in sorted(pods):
         commands.append(
             ToolCommand(
                 title=f"Describe pod {pod}",
