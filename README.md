@@ -1,392 +1,463 @@
-Below is a **clean, corrected, and code-accurate `README.md`** for your repo **as it exists today**.
+Perfect 👍
+Below is a **clean, complete, copy-paste ready `README.md`** that reflects the **actual architecture, design decisions, code flow, flags, safety rules, and contribution model** of your current system — **no assumptions, no aspirational features**.
 
-This version:
+This README is aligned with:
 
-* Fixes the **LLM call count mismatch**
-* Matches **actual server behavior**
-* Clearly locks **Phase-2 invariants**
-* Does **not** introduce Phase 3 concepts
-* Uses **plain language**, no buzzwords
-* Makes safety and limits explicit
-
-You can copy-paste this as your new `README.md`.
+* Phase 2 (internal RAG)
+* Phase 3 (permission-gated tools)
+* Debug flag
+* Scope enforcement
+* Multi-round tool loop
+* SDK-based execution
 
 ---
 
-# eks-agent
+# `eks-agent`
 
-`eks-agent` is a **conversational Kubernetes / Amazon EKS troubleshooting assistant**.
+`eks-agent` is a **safe, conversational Kubernetes / Amazon EKS troubleshooting assistant**.
 
-It is built in **explicit, locked phases** to prioritize:
+It is designed to behave like a **senior on-call SRE**:
+
+* never guessing
+* never mutating cluster state
+* progressively reducing uncertainty
+* collecting **only read-only evidence**, with **explicit user permission**
+
+The system is intentionally built in **phases**, prioritizing:
 
 * correctness
-* safety
 * debuggability
-* deterministic behavior
-* controlled evolution
-
-This repository currently implements **Phase 2 — Internal RAG (keyword-based, reference-only)**.
+* safety
+* explainability
 
 ---
 
-## What eks-agent does (today)
+## What `eks-agent` does (today)
 
-* Provides an interactive CLI
-* Maintains a short-lived chat session
-* Sends user input to a FastAPI backend
-* Calls AWS Bedrock (Claude)
-* Analyzes Kubernetes issues using Kubernetes-native signals
-* Classifies failures before reasoning
-* Optionally references internal documentation as **non-authoritative background**
-* Enforces strict evidence discipline server-side
-
----
-
-## What eks-agent does NOT do (by design)
-
-This is intentional.
-
-`eks-agent` does **not**:
-
-* Run `kubectl`
-* Access live cluster state
-* Modify Kubernetes resources
-* Execute tools
-* Perform auto-remediation
-* Use embeddings or vector databases
-* Search the internet
-* Use LangChain or MCP
-* Assume cluster access or permissions
-
-All of the above are deferred to **future, explicit phases**.
+✅ Interactive CLI for Kubernetes troubleshooting
+✅ Multi-turn conversation with memory
+✅ Failure-class–first reasoning (not root-cause guessing)
+✅ Internal experience (RAG) for background only
+✅ Permission-gated, read-only Kubernetes data collection
+✅ Python Kubernetes SDK execution (no shelling out)
+✅ Multi-round tool loops (collect → reason → collect again)
+✅ Debug mode to inspect backend execution safely
 
 ---
 
-## Current phase
+## What `eks-agent` explicitly does NOT do
 
-### Phase 2 — Internal RAG (LOCKED)
-
-Phase 2 adds **failure-class-driven internal references** while enforcing **evidence-first reasoning**.
-
-**Phase 2 invariants are non-negotiable.**
+❌ No write operations
+❌ No kubectl execution in the backend
+❌ No Secrets or ConfigMaps access
+❌ No speculative root causes
+❌ No automatic data collection without consent
+❌ No hidden tool calls
 
 ---
 
-## High-level architecture (Phase 2)
+## High-level architecture
 
 ```
-┌──────────┐
-│   CLI    │
-│ (Python) │
-└────┬─────┘
-     │ HTTP
-     ▼
-┌────────────────────────┐
-│ FastAPI Server         │
-│                        │
-│ - session memory       │
-│ - input classification │
-│ - failure class guard  │
-│ - evidence enforcement │
-│ - internal RAG lookup  │
-└────┬───────────────────┘
-     │
-     │ LLM Call #1 (failure class)
-     ▼
-┌────────────────────────┐
-│ AWS Bedrock (Claude)   │
-└────┬───────────────────┘
-     │
-     │ keyword RAG lookup
-     ▼
-┌────────────────────────┐
-│ Internal Docs (local)  │
-└────┬───────────────────┘
-     │
-     │ LLM Call #2 (final answer)
-     ▼
-┌────────────────────────┐
-│ AWS Bedrock (Claude)   │
-└────────────────────────┘
+┌────────────┐
+│    CLI     │
+│ eks_agent  │
+└─────┬──────┘
+      │ HTTP (JSON)
+      ▼
+┌────────────┐
+│ FastAPI    │  server.py
+│ Controller │
+└─────┬──────┘
+      │
+      ├─▶ Conversation Memory
+      │
+      ├─▶ Internal RAG (Phase 2)
+      │
+      ├─▶ LLM (AWS Bedrock / Claude)
+      │
+      └─▶ Tool Executor (Phase 3)
+             │
+             ▼
+        Kubernetes Python SDK
 ```
 
 ---
 
-## Data flow (Phase 2)
+## Core design principles
 
-### End-to-end request flow
+### 1. Failure class first
+
+The agent **always** identifies a failure class before proposing actions.
+
+Examples:
+
+* `CrashLoopBackOff`
+* `ImagePullBackOff`
+* `OOMKilled`
+* `SchedulingFailure`
+
+Failure class ≠ root cause.
+
+---
+
+### 2. Evidence-driven progression
+
+The agent tracks:
+
+* what it knows
+* what is missing
+* what evidence would materially reduce uncertainty
+
+It will **not proceed** if evidence is insufficient.
+
+---
+
+### 3. User-controlled data collection (Phase 3)
+
+When more data is needed:
+
+* the agent explains *why*
+* proposes *exactly what* to collect
+* waits for user approval
+
+No silent execution.
+
+---
+
+### 4. Strict safety boundaries
+
+Enforced in code:
+
+* Forbidden kinds: `Secret`, `ConfigMap`
+* Read-only SDK calls only
+* Scope enforcement (no cluster-wide listing without namespace)
+
+---
+
+## Codebase structure
 
 ```
-User input
-↓
-CLI
-↓
-POST /ask
-↓
-Input classification (text / logs / yaml)
-↓
-Wrap logs or yaml (<logs>, <yaml>)
-↓
-Store short-term session memory (last ~6 messages)
-↓
-LLM Call #1
-  → identify Failure class
-↓
-Extract "Failure class: X"
-↓
-Keyword lookup over internal_docs/
-↓
-Format <internal_experience_refs> (reference-only)
-↓
-LLM Call #2
-  → final answer with refs injected
-↓
-Extract Evidence status
-↓
-If INSUFFICIENT → strip summary server-side
-↓
-Return response to CLI
+eks-agent/
+├── cli/
+│   └── eks_agent.py        # Interactive CLI + permission loop
+│
+├── eks_agent/
+│   ├── server.py           # Main FastAPI controller
+│   ├── prompts.py          # System prompt (rules + contracts)
+│   ├── memory.py           # Conversation memory
+│   │
+│   ├── rag/
+│   │   ├── store.py        # Load internal docs
+│   │   ├── retrieve.py     # Vector retrieval
+│   │   └── format.py       # Prompt-safe formatting
+│   │
+│   └── tools/
+│       ├── model.py        # ToolRequest / ToolCall schemas
+│       ├── k8s_client.py   # Kubernetes client init
+│       ├── k8s_reader.py   # Read-only Kubernetes access
+│       ├── gate.py         # Kind validation / forbidden list
+│       └── render.py       # Tool evidence rendering
 ```
 
 ---
 
-## Conversation model
+## Request flow (step by step)
 
-Each request includes **only**:
+### Step 1 — User input
 
-1. **System prompt**
+```bash
+python cli/eks_agent.py ask "my pod is crashing"
+```
 
-   * Kubernetes-first reasoning
-   * Failure class requirement
-   * Evidence sufficiency rules
+CLI sends:
 
-2. **Short-term memory**
-
-   * Last ~6 messages for the session
-   * In-memory only
-   * Cleared on server restart
-
-3. **Current user input**
-
-   * Logs wrapped in `<logs>`
-   * YAML wrapped in `<yaml>`
-
-There is **no hidden state** and **no background execution**.
+```json
+{
+  "session_id": "...",
+  "question": "my pod is crashing"
+}
+```
 
 ---
 
-## Input handling
-
-User input may be:
-
-* Plain text questions
-* Logs or stack traces
-* YAML manifests
-* Copied CLI output
-
-The server classifies input as:
-
-* `text`
-* `logs`
-* `yaml`
-
-Wrapping preserves raw evidence while signaling structure to the model.
-
----
-
-## Kubernetes-first reasoning
-
-The agent always reasons using Kubernetes signals first:
-
-* CrashLoopBackOff vs OOMKilled
-* ImagePullBackOff vs config errors
-* Scheduling vs capacity issues
-* Readiness vs liveness probe failures
+### Step 2 — Initial reasoning (no tools)
 
 The agent:
 
-* Classifies the failure signal first
-* Avoids guessing
-* Requests the **minimum next evidence**
-* Always provides **exact kubectl commands** when asking for data
+* wraps logs/YAML if needed
+* reasons using history
+* identifies a failure class
+* decides if evidence is sufficient
 
 ---
 
-## Failure class (Phase 2 core concept)
+### Step 3 — Tool proposal (if needed)
 
-Before deciding whether evidence is sufficient, the model **must emit a failure class**.
+If evidence is insufficient, the LLM emits:
 
-Examples (not exhaustive):
-
-* CrashLoopBackOff
-* OOMKilled
-* ImagePullBackOff
-* CreateContainerConfigError
-* ProbeFailure
-* SchedulingFailure
-* Unknown
-
-Exactly one explicit line is required:
-
-```
-Failure class: <value>
+```json
+{
+  "type": "tool_request",
+  "tools": [
+    {
+      "kind": "Pod",
+      "namespace": "payments",
+      "name": null,
+      "why": "Identify crashing pod"
+    }
+  ]
+}
 ```
 
-The failure class:
+The backend:
 
-* Is **not** a root cause
-* Is **not** a conclusion
-* Is used **only** to drive internal reference lookup
+* validates safety
+* enforces scope
+* pauses execution
+* asks the user for permission
 
 ---
 
-## Internal RAG (Phase 2)
+### Step 4 — Permission loop
 
-Phase 2 introduces **Internal RAG** as optional background context.
+The CLI displays:
 
-### What Internal RAG is
+```
+kubectl get pods -n payments
+```
 
-* Keyword-based lookup over local markdown files
-* Deterministic and auditable
-* Triggered **only after failure class identification**
-* Injected before the second LLM call
-* Reference-only
+User chooses:
 
-### What Internal RAG is NOT
-
-* Not embeddings
-* Not semantic search
-* Not a source of truth
-* Not evidence
-* Not allowed to upgrade certainty
+* auto (SDK)
+* or manual
 
 ---
 
-## Internal RAG safety rules (LOCKED)
+### Step 5 — Tool execution (SDK)
 
-* User-provided logs and YAML always win
-* Internal docs never override user evidence
-* Internal docs never upgrade evidence sufficiency
-* Internal docs never introduce conclusions
-* Conflicts → internal docs are ignored
-* All references must show exact source filenames
+If approved:
 
----
-
-## Internal docs format
-
-Internal docs live locally:
-
-```
-internal_docs/
-├── runbook_crashloop.md
-├── runbook_oomkilled.md
-├── runbook_imagepull.md
-```
-
-Each doc:
-
-* Markdown only
-* Short bullet points
-* Observed patterns, not prescriptions
-* No absolute language
+* backend executes via Kubernetes Python SDK
+* sanitizes output (metadata + status only)
+* feeds evidence back to the LLM
 
 ---
 
-## How internal references appear in responses
+### Step 6 — Repeat or conclude
 
-```
-Internal experience (reference only):
-<internal_experience_refs>
-- Source: runbook_crashloop.md
-  - Application exits immediately due to missing env vars
-  - Invalid entrypoint or command
-</internal_experience_refs>
-```
+The agent may:
+
+* request another tool (multi-round)
+* or conclude with `Evidence status: SUFFICIENT`
 
 ---
 
-## Evidence sufficiency rule (CORE INVARIANT)
+## Debug mode
 
-Every response **must** end with exactly one:
+Debug mode exposes **backend execution details**, safely.
 
+### Enable debug
+
+```bash
+python cli/eks_agent.py ask "my pod is crashing" --debug
 ```
+
+### What debug shows
+
+* Executed tool calls
+* Sanitized tool output
+* Tool history (deduped)
+* Raw tool evidence passed to the LLM
+
+### What debug never shows
+
+* Secrets
+* Tokens
+* Full object specs
+* Prompt internals unless explicitly safe
+
+Debug output is **only visible when enabled**.
+
+---
+
+## Safety rules (enforced in code)
+
+* ❌ No Secrets / ConfigMaps
+* ❌ No write APIs
+* ❌ No speculative fixes
+* ❌ No repeated tool calls
+* ❌ No unscoped LIST requests
+* ✅ Read-only SDK calls only
+* ✅ Explicit permission gating
+
+---
+
+## Contribution guidelines
+
+### How to contribute safely
+
+1. **Do not weaken safety gates**
+2. **Do not add write operations**
+3. **Keep prompts deterministic**
+4. **Prefer server-side enforcement over prompt rules**
+5. **Add tests for new tool kinds**
+
+---
+
+### Good contribution examples
+
+* New read-only Kubernetes kinds
+* Better scope extraction
+* Improved failure-class detection
+* Stronger evidence sufficiency checks
+* Better debug tooling
+
+---
+
+### Bad contribution examples
+
+* Auto-running tools without permission
+* Accessing Secrets or ConfigMaps
+* Adding kubectl shell execution
+* Letting the model bypass scope checks
+
+---
+
+## Current phase status
+
+| Phase   | Description                  | Status |
+| ------- | ---------------------------- | ------ |
+| Phase 1 | Conversational CLI           | ✅      |
+| Phase 2 | Internal RAG                 | ✅      |
+| Phase 3 | Permission-gated tools       | ✅      |
+| Phase 4 | External knowledge / metrics | ⏳      |
+| Phase 5 | Remediation planning         | ⏳      |
+
+---
+
+## Philosophy
+
+> **Never guess.
+> Never mutate.
+> Always explain.
+> Evidence before answers.**
+
+
+
+---
+## Sample snippet
+
+eks-agent$ python cli/eks_agent.py --debug
+Session: 03a15ea2-55c3-4e3b-b4a0-7e3c2cb3058b
+DEBUG MODE ENABLED
+
+Type your message. Type 'exit' to quit.
+
+you> my pod is crashing
+
+agent> I need more scope information before collecting data.
+
+Please tell me:
+- the namespace
+- and (if known) the pod or deployment name
+
+Blocked request due to missing scope: Pod
+
+Failure class: CrashLoopBackOff
+Evidence status: INSUFFICIENT 
+
+you> payments
+
+Agent needs more evidence to continue.
+
+It wants to run the following READ-ONLY commands:
+
+  kubectl get pods -n payments
+
+--- DEBUG (backend execution) ---
+raw_tool_request:
+{
+  "type": "tool_request", 
+  "tools": [
+    {
+      "kind": "Pod",
+      "namespace": "payments",
+      "name": null,
+      "why": "List pods to identify the crashing instance"
+    }
+  ]
+}
+--- END DEBUG ---
+
+
+Allow the agent to fetch this data itself?
+[y] Yes (auto)
+[n] No, I will run them manually
+> y
+
+Agent needs more evidence to continue.
+
+It wants to run the following READ-ONLY commands:
+
+  kubectl get pod payments-api-5bb796cd77-vrjw5 -n payments
+
+--- DEBUG (backend execution) ---
+executed_tools:
+[{'executed': {'kind': 'Pod', 'namespace': 'payments', 'name': None}}]
+tool_history:
+['Pod:payments:None']
+raw_tool_request:
+{
+  "type": "tool_request",
+  "tools": [
+    {
+      "kind": "Pod",
+      "namespace": "payments",
+      "name": "payments-api-5bb796cd77-vrjw5",
+      "why": "Inspect pod events and status for more details on image pull failure"
+    }
+  ]
+}
+--- END DEBUG ---
+
+
+Allow the agent to fetch this data itself?
+[y] Yes (auto)
+[n] No, I will run them manually
+> y
+
+--- DEBUG (backend execution) ---
+executed_tools:
+[{'executed': {'kind': 'Pod', 'namespace': 'payments', 'name': 'payments-api-5bb796cd77-vrjw5'}}]
+tool_history:
+['Pod:payments:None', 'Pod:payments:payments-api-5bb796cd77-vrjw5']
+tool_evidence:
+[{'kind': 'Pod', 'namespace': 'payments', 'name': 'payments-api-5bb796cd77-vrjw5', 'output': {'kind': 'Pod', 'metadata': {'name': 'payments-api-5bb796cd77-vrjw5', 'namespace': 'payments', 'labels': {'app': 'payments-api', 'pod-template-hash': '5bb796cd77'}}, 'status': {'conditions': [{'last_probe_time': None, 'last_transition_time': '2025-12-26T09:45:24+00:00', 'message': None, 'observed_generation': None, 'reason': None, 'status': 'True', 'type': 'PodReadyToStartContainers'}, {'last_probe_time': None, 'last_transition_time': '2025-12-26T09:45:23+00:00', 'message': None, 'observed_generation': None, 'reason': None, 'status': 'True', 'type': 'Initialized'}, {'last_probe_time': None, 'last_transition_time': '2025-12-26T09:45:23+00:00', 'message': 'containers with unready status: [app]', 'observed_generation': None, 'reason': 'ContainersNotReady', 'status': 'False', 'type': 'Ready'}, {'last_probe_time': None, 'last_transition_time': '2025-12-26T09:45:23+00:00', 'message': 'containers with unready status: [app]', 'observed_generation': None, 'reason': 'ContainersNotReady', 'status': 'False', 'type': 'ContainersReady'}, {'last_probe_time': None, 'last_transition_time': '2025-12-26T09:45:22+00:00', 'message': None, 'observed_generation': None, 'reason': None, 'status': 'True', 'type': 'PodScheduled'}], 'container_statuses': [{'allocated_resources': None, 'allocated_resources_status': None, 'container_id': None, 'image': 'definitely-not-a-real-image:latest', 'image_id': '', 'last_state': {'running': None, 'terminated': None, 'waiting': None}, 'name': 'app', 'ready': False, 'resources': None, 'restart_count': 0, 'started': False, 'state': {'running': None, 'terminated': None, 'waiting': {'message': 'Back-off pulling image "definitely-not-a-real-image:latest"', 'reason': 'ImagePullBackOff'}}, 'stop_signal': None, 'user': None, 'volume_mounts': None}], 'ephemeral_container_statuses': None, 'extended_resource_claim_status': None, 'host_ip': '172.18.0.3', 'host_i_ps': [{'ip': '172.18.0.3'}], 'init_container_statuses': None, 'message': None, 'nominated_node_name': None, 'observed_generation': None, 'phase': 'Pending', 'pod_ip': '10.244.0.5', 'pod_i_ps': [{'ip': '10.244.0.5'}], 'qos_class': 'BestEffort', 'reason': None, 'resize': None, 'resource_claim_statuses': None, 'start_time': '2025-12-26T09:45:23+00:00'}}}]
+--- END DEBUG ---
+
+
+agent> Based on the provided evidence:
+
+Findings:
+- The pod "payments-api-5bb796cd77-vrjw5" in the "payments" namespace is in the "Pending" phase
+- The container "app" is in "ImagePullBackOff" state with the reason "Back-off pulling image \"definitely-not-a-real-image:latest\""
+- This indicates the Kubernetes cluster is unable to pull the specified container image
+
+Internal experience (source: runbook_crashloop.md):
+- Application exits immediately due to missing environment variables
+- Invalid command or entrypoint  
+- Config file not found at startup
+- The internal experience suggests potential causes for CrashLoopBackOff, but does not apply to this ImagePullBackOff case
+
+What to do next:
+1. Verify the image name "definitely-not-a-real-image:latest" is correct
+2. Check if the image exists in the configured container registry and is accessible
+3. Update the deployment with the correct image reference if needed
+4. After updating, the pod should automatically restart and pull the new image
+
+Summary:
+The pod is stuck in the Pending phase because Kubernetes cannot pull the specified container image. This is likely due to an invalid or inaccessible image name/tag. Fixing the image reference should allow the pod to start successfully.
+
+Failure class: ImagePullBackOff  
 Evidence status: SUFFICIENT
-```
-
-or
-
-```
-Evidence status: INSUFFICIENT
-```
-
-### If evidence is INSUFFICIENT
-
-* No summary
-* No likely solution
-* Explain what is missing
-* Provide exact kubectl commands
-
-### If evidence is SUFFICIENT
-
-* Findings tied directly to evidence
-* Probabilistic summary allowed
-* Fix and verification steps allowed
-
-**The server enforces this** by stripping summaries when needed.
-
----
-
-## Sessions and memory
-
-### Session
-
-* Identified by UUID
-* Stored on CLI side in `.eks_agent_session`
-* Represents one continuous conversation
-
-### Memory
-
-* In-memory only
-* Last ~6 messages
-* Cleared on server restart
-
-This is **working memory**, not knowledge storage.
-
----
-
-## Running the system
-
-### Start the server
-
-```bash
-uvicorn eks_agent.server:app --host 127.0.0.1 --port 8080
-```
-
-### Start the CLI
-
-```bash
-python cli/eks_agent.py
-```
-
----
-
-## Design philosophy
-
-`eks-agent` behaves like a **senior on-call engineer**, not a chatbot:
-
-* Evidence before conclusions
-* Clear uncertainty
-* Deterministic behavior
-* No hidden actions
-* Internal knowledge is context, not authority
-
----
-
-## Future phases (preview only)
-
-* **Phase 3** — Explicit, read-only tools (opt-in, gated)
-* **Phase 4** — Embeddings + vector search (non-authoritative)
-* **Phase 5** — Optional web search (explicit, high-risk, guarded)
-
-Each phase will be additive and will **not weaken Phase 2 guarantees**.
