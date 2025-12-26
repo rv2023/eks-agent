@@ -2,10 +2,8 @@ import sys
 import uuid
 import requests
 
-if sys.version_info < (3, 10):
-    raise RuntimeError("eks-agent requires Python 3.10+")
-
 SESSION_FILE = ".eks_agent_session"
+SERVER_URL = "http://127.0.0.1:8080/ask"
 
 
 def load_or_create_session():
@@ -19,45 +17,69 @@ def load_or_create_session():
         return sid
 
 
+def post(payload):
+    r = requests.post(SERVER_URL, json=payload)
+    r.raise_for_status()
+    return r.json()
+
+
+def handle_permission(session_id, res):
+    """
+    Handles ONE permission request.
+    Returns the next server response.
+    """
+    print("\nAgent needs more evidence to continue.\n")
+    print("It wants to run the following READ-ONLY commands:\n")
+
+    for c in res.get("kubectl_commands", []):
+        print(" ", c)
+
+    choice = input(
+        "\nAllow the agent to fetch this data itself?\n"
+        "[y] Yes (auto)\n"
+        "[n] No, I will run them manually\n> "
+    )
+
+    tool_choice = "self" if choice.lower().startswith("y") else "manual"
+
+    return post({
+        "session_id": session_id,
+        "tool_choice": tool_choice,
+    })
+
+
 def main():
     session_id = load_or_create_session()
     print(f"Session: {session_id}")
     print("Type your message. Type 'exit' to quit.\n")
 
     while True:
-        try:
-            question = input("you> ").strip()
-        except KeyboardInterrupt:
-            print("\nExiting.")
-            break
-
-        if question.lower() in ("exit", "quit"):
+        question = input("you> ").strip()
+        if question in ("exit", "quit"):
             print("Goodbye.")
             break
 
-        if not question:
-            continue
+        # Initial user question
+        res = post({
+            "session_id": session_id,
+            "question": question,
+        })
 
-        try:
-            response = requests.post(
-                "http://127.0.0.1:8080/ask",
-                json={
-                    "session_id": session_id,
-                    "question": question,
-                },
-                timeout=30,
-            )
-        except requests.RequestException as e:
-            print(f"Error: could not reach server: {e}")
-            continue
+        # 🔁 LOOP until we get a final answer
+        while True:
+            mode = res.get("mode")
 
-        if response.status_code != 200:
-            print(f"Server error: {response.status_code}")
-            print(response.text)
-            continue
+            if mode == "permission":
+                res = handle_permission(session_id, res)
+                continue
 
-        data = response.json()
-        print(f"agent> {data.get('text', '')}\n")
+            if mode == "answer":
+                print("\nagent>", res.get("text", ""), "\n")
+                break
+
+            # Safety net
+            print("\nagent> Unexpected response:", res)
+            break
 
 
 if __name__ == "__main__":
