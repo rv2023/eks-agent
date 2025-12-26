@@ -1,12 +1,29 @@
+Below is a **clean, corrected, and code-accurate `README.md`** for your repo **as it exists today**.
+
+This version:
+
+* Fixes the **LLM call count mismatch**
+* Matches **actual server behavior**
+* Clearly locks **Phase-2 invariants**
+* Does **not** introduce Phase 3 concepts
+* Uses **plain language**, no buzzwords
+* Makes safety and limits explicit
+
+You can copy-paste this as your new `README.md`.
+
+---
+
+# eks-agent
+
 `eks-agent` is a **conversational Kubernetes / Amazon EKS troubleshooting assistant**.
 
-It is intentionally built in **explicit, incremental phases** to prioritize:
+It is built in **explicit, locked phases** to prioritize:
 
-- correctness
-- debuggability
-- safety
-- learning
-- controlled evolution
+* correctness
+* safety
+* debuggability
+* deterministic behavior
+* controlled evolution
 
 This repository currently implements **Phase 2 — Internal RAG (keyword-based, reference-only)**.
 
@@ -14,13 +31,14 @@ This repository currently implements **Phase 2 — Internal RAG (keyword-based, 
 
 ## What eks-agent does (today)
 
-- Provides an interactive CLI
-- Maintains a continuous chat session
-- Sends user input to a backend server
-- Calls AWS Bedrock (Claude)
-- Returns human-readable Kubernetes troubleshooting guidance
-- Remembers short-term conversation context
-- Optionally references **internal documentation** as **non-authoritative background**
+* Provides an interactive CLI
+* Maintains a short-lived chat session
+* Sends user input to a FastAPI backend
+* Calls AWS Bedrock (Claude)
+* Analyzes Kubernetes issues using Kubernetes-native signals
+* Classifies failures before reasoning
+* Optionally references internal documentation as **non-authoritative background**
+* Enforces strict evidence discipline server-side
 
 ---
 
@@ -30,49 +48,67 @@ This is intentional.
 
 `eks-agent` does **not**:
 
-- Run `kubectl`
-- Access live cluster state
-- Modify Kubernetes resources
-- Perform auto-remediation
-- Execute tools
-- Search the internet
-- Use embeddings or vector databases
-- Use LangChain
-- Use MCP (Model Context Protocol)
+* Run `kubectl`
+* Access live cluster state
+* Modify Kubernetes resources
+* Execute tools
+* Perform auto-remediation
+* Use embeddings or vector databases
+* Search the internet
+* Use LangChain or MCP
+* Assume cluster access or permissions
 
-All of the above are deferred to **later, explicit phases**.
+All of the above are deferred to **future, explicit phases**.
 
 ---
 
-## High-level architecture
+## Current phase
+
+### Phase 2 — Internal RAG (LOCKED)
+
+Phase 2 adds **failure-class-driven internal references** while enforcing **evidence-first reasoning**.
+
+**Phase 2 invariants are non-negotiable.**
+
+---
+
+## High-level architecture (Phase 2)
 
 ```
-
 ┌──────────┐
 │   CLI    │
 │ (Python) │
 └────┬─────┘
-│ HTTP
-▼
-┌────────────────────┐
-│ FastAPI Server     │
-│                    │
-│ - session memory   │
-│ - input parsing    │
-│ - evidence guard   │
-│ - internal RAG     │
-└────┬───────────────┘
-│
-│ single LLM call
-▼
-┌────────────────────┐
-│ AWS Bedrock        │
-│ (Claude)           │
-└────────────────────┘
-
+     │ HTTP
+     ▼
+┌────────────────────────┐
+│ FastAPI Server         │
+│                        │
+│ - session memory       │
+│ - input classification │
+│ - failure class guard  │
+│ - evidence enforcement │
+│ - internal RAG lookup  │
+└────┬───────────────────┘
+     │
+     │ LLM Call #1 (failure class)
+     ▼
+┌────────────────────────┐
+│ AWS Bedrock (Claude)   │
+└────┬───────────────────┘
+     │
+     │ keyword RAG lookup
+     ▼
+┌────────────────────────┐
+│ Internal Docs (local)  │
+└────┬───────────────────┘
+     │
+     │ LLM Call #2 (final answer)
+     ▼
+┌────────────────────────┐
+│ AWS Bedrock (Claude)   │
+└────────────────────────┘
 ```
-
-Internal documentation is **never authoritative** and is not treated as evidence.
 
 ---
 
@@ -81,56 +117,61 @@ Internal documentation is **never authoritative** and is not treated as evidence
 ### End-to-end request flow
 
 ```
-
 User input
 ↓
 CLI
 ↓
-FastAPI /ask
+POST /ask
 ↓
 Input classification (text / logs / yaml)
 ↓
-Conversation assembly (last N messages)
+Wrap logs or yaml (<logs>, <yaml>)
 ↓
-Single LLM call (Claude)
+Store short-term session memory (last ~6 messages)
 ↓
-┌─────────────────────────────────────────┐
-│ Model outputs:                          │
-│ - reasoning                             │
-│ - failure class (MANDATORY)             │
-│ - evidence status (MANDATORY)           │
-└─────────────────────────────────────────┘
+LLM Call #1
+  → identify Failure class
 ↓
-Failure class extraction (server-side)
+Extract "Failure class: X"
 ↓
-Internal doc retrieval (keyword-based)
+Keyword lookup over internal_docs/
 ↓
-Internal refs appended (reference-only)
+Format <internal_experience_refs> (reference-only)
 ↓
-Evidence enforcement (strip summary if needed)
+LLM Call #2
+  → final answer with refs injected
 ↓
-Response returned to CLI
-
-````
+Extract Evidence status
+↓
+If INSUFFICIENT → strip summary server-side
+↓
+Return response to CLI
+```
 
 ---
 
 ## Conversation model
 
-Each LLM call includes **only**:
+Each request includes **only**:
 
 1. **System prompt**
-   - Kubernetes-first reasoning
-   - Failure class requirement
-   - Evidence discipline rules
+
+   * Kubernetes-first reasoning
+   * Failure class requirement
+   * Evidence sufficiency rules
 
 2. **Short-term memory**
-   - Last ~6 messages for the session
+
+   * Last ~6 messages for the session
+   * In-memory only
+   * Cleared on server restart
 
 3. **Current user input**
-   - Wrapped with `<logs>` or `<yaml>` if detected
 
-There is **no hidden state**, background reasoning, or tool execution.
+   * Logs wrapped in `<logs>`
+   * YAML wrapped in `<yaml>`
+
+There is **no hidden state** and **no background execution**.
 
 ---
 
@@ -138,31 +179,24 @@ There is **no hidden state**, background reasoning, or tool execution.
 
 User input may be:
 
-- Plain text questions
-- Logs / errors
-- YAML manifests
-- Copied CLI output
+* Plain text questions
+* Logs or stack traces
+* YAML manifests
+* Copied CLI output
 
 The server classifies input as:
 
-- `text`
-- `logs`
-- `yaml`
+* `text`
+* `logs`
+* `yaml`
 
-Logs and YAML are wrapped internally:
-
-```text
-<logs>...</logs>
-<yaml>...</yaml>
-````
-
-This preserves raw evidence while signaling structure to the model.
+Wrapping preserves raw evidence while signaling structure to the model.
 
 ---
 
 ## Kubernetes-first reasoning
 
-The agent always reasons using Kubernetes-native signals first:
+The agent always reasons using Kubernetes signals first:
 
 * CrashLoopBackOff vs OOMKilled
 * ImagePullBackOff vs config errors
@@ -171,18 +205,18 @@ The agent always reasons using Kubernetes-native signals first:
 
 The agent:
 
-* Classifies the failure type first
+* Classifies the failure signal first
 * Avoids guessing
 * Requests the **minimum next evidence**
-* Always asks for data using **explicit kubectl commands**
+* Always provides **exact kubectl commands** when asking for data
 
 ---
 
 ## Failure class (Phase 2 core concept)
 
-Before deciding whether evidence is sufficient, the model must emit a **failure class**.
+Before deciding whether evidence is sufficient, the model **must emit a failure class**.
 
-Examples (non-exhaustive):
+Examples (not exhaustive):
 
 * CrashLoopBackOff
 * OOMKilled
@@ -192,88 +226,79 @@ Examples (non-exhaustive):
 * SchedulingFailure
 * Unknown
 
-The response **must include exactly one line**:
+Exactly one explicit line is required:
 
-```text
+```
 Failure class: <value>
 ```
 
 The failure class:
 
-* Is **not a root cause**
-* Is **not a conclusion**
-* Is used only to **drive internal reference lookup**
+* Is **not** a root cause
+* Is **not** a conclusion
+* Is used **only** to drive internal reference lookup
 
 ---
 
 ## Internal RAG (Phase 2)
 
-Phase 2 introduces **Internal RAG** as **optional, additive context**.
+Phase 2 introduces **Internal RAG** as optional background context.
 
 ### What Internal RAG is
 
-* Keyword-based lookup over internal docs
+* Keyword-based lookup over local markdown files
 * Deterministic and auditable
-* Triggered only after failure class identification
-* Reference-only (never authoritative)
+* Triggered **only after failure class identification**
+* Injected before the second LLM call
+* Reference-only
 
 ### What Internal RAG is NOT
 
 * Not embeddings
 * Not semantic search
-* Not a second LLM call
-* Not evidence
 * Not a source of truth
+* Not evidence
+* Not allowed to upgrade certainty
 
 ---
 
-## Internal RAG safety rules (non-negotiable)
+## Internal RAG safety rules (LOCKED)
 
-* User-provided logs, YAML, and statements always win
-* Internal docs **must not** upgrade evidence sufficiency
-* Internal docs **must not** override user evidence
-* Internal docs **must not** introduce conclusions
-* If internal docs conflict with user evidence → ignore internal docs
-* All internal references must show **exact source names**
+* User-provided logs and YAML always win
+* Internal docs never override user evidence
+* Internal docs never upgrade evidence sufficiency
+* Internal docs never introduce conclusions
+* Conflicts → internal docs are ignored
+* All references must show exact source filenames
 
 ---
 
-## Internal docs format (MVP)
+## Internal docs format
 
 Internal docs live locally:
 
 ```
 internal_docs/
-├── crashloop.md
-├── oomkilled.md
-├── imagepull.md
+├── runbook_crashloop.md
+├── runbook_oomkilled.md
+├── runbook_imagepull.md
 ```
 
-Each doc should:
+Each doc:
 
-* Be Markdown
-* Contain short bullet points (`- ...`)
-* Describe observed patterns, not prescriptions
-* Avoid absolute language
-
-Example:
-
-```md
-# CrashLoopBackOff
-
-- Application exits immediately due to missing env vars
-- Invalid entrypoint or command
-- Config file missing at startup
-```
+* Markdown only
+* Short bullet points
+* Observed patterns, not prescriptions
+* No absolute language
 
 ---
 
 ## How internal references appear in responses
 
-```text
+```
 Internal experience (reference only):
 <internal_experience_refs>
-- Source: crashloop.md
+- Source: runbook_crashloop.md
   - Application exits immediately due to missing env vars
   - Invalid entrypoint or command
 </internal_experience_refs>
@@ -281,38 +306,34 @@ Internal experience (reference only):
 
 ---
 
-## Evidence sufficiency rule (core invariant)
+## Evidence sufficiency rule (CORE INVARIANT)
 
-Before summarizing or proposing a solution, the model must decide:
+Every response **must** end with exactly one:
 
-> “Do I have enough evidence to conclude?”
-
-It must end every response with **exactly one**:
-
-```text
-Evidence status: INSUFFICIENT
+```
+Evidence status: SUFFICIENT
 ```
 
 or
 
-```text
-Evidence status: SUFFICIENT
+```
+Evidence status: INSUFFICIENT
 ```
 
 ### If evidence is INSUFFICIENT
 
 * No summary
 * No likely solution
-* Explain what’s missing
+* Explain what is missing
 * Provide exact kubectl commands
 
 ### If evidence is SUFFICIENT
 
 * Findings tied directly to evidence
 * Probabilistic summary allowed
-* Fix + verification steps provided
+* Fix and verification steps allowed
 
-The **server enforces this** by stripping summaries when needed.
+**The server enforces this** by stripping summaries when needed.
 
 ---
 
@@ -326,12 +347,11 @@ The **server enforces this** by stripping summaries when needed.
 
 ### Memory
 
-* In-memory (RAM)
-* Keyed by `session_id`
-* Last ~6 messages only
+* In-memory only
+* Last ~6 messages
 * Cleared on server restart
 
-This is **working memory**, not long-term knowledge.
+This is **working memory**, not knowledge storage.
 
 ---
 
@@ -351,23 +371,6 @@ python cli/eks_agent.py
 
 ---
 
-## Current phase
-
-### Phase 2 (this repository)
-
-* One LLM call per request
-* Failure-class-driven internal RAG
-* Keyword retrieval only
-* Reference-only internal docs
-* No tools
-* No embeddings
-* No web search
-* Strong evidence discipline
-
-Future phases will be **explicit, gated, and opt-in**.
-
----
-
 ## Design philosophy
 
 `eks-agent` behaves like a **senior on-call engineer**, not a chatbot:
@@ -378,14 +381,12 @@ Future phases will be **explicit, gated, and opt-in**.
 * No hidden actions
 * Internal knowledge is context, not authority
 
-```
-
 ---
 
-If you want next, we can **lock Phase-2 fully** by adding:
+## Future phases (preview only)
 
-- an *Internal Docs Authoring Guide*
-- pytest tests that enforce:
-  - source must be shown
-  - RAG never upgrades evidence
-- or a clean **Phase-3 (tool-based) README extension**
+* **Phase 3** — Explicit, read-only tools (opt-in, gated)
+* **Phase 4** — Embeddings + vector search (non-authoritative)
+* **Phase 5** — Optional web search (explicit, high-risk, guarded)
+
+Each phase will be additive and will **not weaken Phase 2 guarantees**.
