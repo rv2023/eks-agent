@@ -1,10 +1,18 @@
 from fastapi import FastAPI
+
 from eks_agent.bedrock import ask_claude
 from eks_agent.memory import add_message, get_messages
 from eks_agent.prompts import SYSTEM_PROMPT
 
+from eks_agent.rag.store import load_internal_docs
+from eks_agent.rag.retrieve import build_index, retrieve_top_k
+from eks_agent.rag.format import format_internal_refs
+
 app = FastAPI()
 
+_INTERNAL_DOCS = load_internal_docs("internal_docs")
+_INTERNAL_INDEX = build_index(_INTERNAL_DOCS)
+print(f"[debug] loaded {len(_INTERNAL_DOCS)} internal docs")
 
 @app.post("/ask")
 def ask(payload: dict):
@@ -14,9 +22,10 @@ def ask(payload: dict):
     if not session_id or not question:
         return {"mode": "error", "text": "Missing session_id or question"}
 
-    # detect and wrap input
+    # ---------------------------
+    # Input classification
+    # ---------------------------
     input_type = detect_input_type(question)
-    print(f"[debug] detected input type: {input_type}")
 
     if input_type == "logs":
         wrapped = f"<logs>\n{question}\n</logs>"
@@ -25,29 +34,73 @@ def ask(payload: dict):
     else:
         wrapped = question
 
-    # store user message
     add_message(session_id, "user", wrapped)
 
     history = get_messages(session_id)
 
-    # build conversation text
-    conversation = ""
+    base_prompt = ""
     for msg in history:
-        conversation += f"{msg['role']}: {msg['text']}\n"
+        base_prompt += f"{msg['role']}: {msg['text']}\n"
 
+    # ---------------------------
+    # LLM CALL 1 — failure class only
+    # ---------------------------
     try:
-        answer = ask_claude(SYSTEM_PROMPT, conversation)
+        draft = ask_claude(SYSTEM_PROMPT, base_prompt)
     except Exception as e:
         return {"mode": "error", "text": str(e)}
 
-    # enforce evidence discipline
+    failure_class = extract_failure_class(draft) or "Unknown"
+
+    if len(failure_class) > 64:
+        failure_class = "Unknown"
+
+    # ---------------------------
+    # Phase-2 Internal RAG
+    # ---------------------------
+    internal_block = ""
+
+    if failure_class != "Unknown":
+        docs = retrieve_top_k(
+            _INTERNAL_INDEX,
+            query=failure_class,
+            k=3,
+            min_score=0.5,
+        )
+        print(f"[debug] retrieved {len(docs)} internal docs")
+        internal_block = format_internal_refs(docs)
+
+    # ---------------------------
+    # LLM CALL 2 — final answer
+    # ---------------------------
+    final_prompt = base_prompt
+
+    if internal_block:
+        final_prompt += "\n" + internal_block + "\n"
+
+    try:
+        answer = ask_claude(SYSTEM_PROMPT, final_prompt)
+    except Exception as e:
+        return {"mode": "error", "text": str(e)}
+
     status = extract_evidence_status(answer)
     answer = strip_summary_if_needed(answer, status)
 
-    # store assistant reply
     add_message(session_id, "assistant", answer)
 
     return {"mode": "answer", "text": answer}
+
+
+# =========================================================
+# Helpers
+# =========================================================
+
+def extract_failure_class(text: str) -> str | None:
+    found = None
+    for line in text.splitlines():
+        if line.lower().startswith("failure class:"):
+            found = line.split(":", 1)[1].strip()
+    return found
 
 
 def extract_evidence_status(text: str) -> str:
@@ -72,27 +125,15 @@ def strip_summary_if_needed(text: str, status: str) -> str:
 
 
 def detect_input_type(text: str) -> str:
-    t = text.strip()
-    tl = t.lower()
+    tl = text.lower()
 
-    # error / log signals (case-insensitive)
-    if (
-        "exception" in tl
-        or "traceback" in tl
-        or "crashloopbackoff" in tl
-        or "oomkilled" in tl
-        or "back-off" in tl
-        or "restarting" in tl
-        or "error" in tl
-        or "err" in tl
-        or "exit" in tl
-        or "fail" in tl
-        or "crash" in tl
-        or "kill" in tl
-    ):
+    if any(k in tl for k in [
+        "exception", "traceback", "crashloopbackoff",
+        "oomkilled", "back-off", "restarting",
+        "error", "fail", "crash", "kill"
+    ]):
         return "logs"
 
-    # yaml only if clearly a manifest
     if tl.startswith("apiversion:") and "\nkind:" in tl:
         return "yaml"
 
