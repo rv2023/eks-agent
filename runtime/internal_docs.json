@@ -1,0 +1,29 @@
+[
+  {
+    "id": "runbook_crashloop",
+    "title": "Runbook Crashloop",
+    "text": "# CrashLoopBackOff runbook\n\nCrashLoopBackOff happens when a container starts and exits repeatedly.\n\nCommon internal causes we have seen:\n- Application exits immediately due to missing environment variables\n- Invalid command or entrypoint\n- Config file not found at startup\n\nTypical checks:\n- kubectl logs <pod> --previous\n- kubectl describe pod <pod>\n\nThis document is reference-only.\n\nCrashLoopBackOff\nCrashLoopBackOff\nCrashLoopBackOff",
+    "meta": {
+      "source": "internal_md",
+      "filename": "runbook_crashloop.md"
+    }
+  },
+  {
+    "id": "runbook_imagepull",
+    "title": "Runbook Imagepull",
+    "text": "# ImagePullBackOff runbook\n\nImagePullBackOff occurs when Kubernetes cannot pull the container image.\n\nInternal cases included:\n- Incorrect image tag\n- Missing or misconfigured imagePullSecrets\n- Private registry access issues\n\nTypical checks:\n- kubectl describe pod <pod>\n- Verify image name and registry credentials\n\nThis document is reference-only.\n",
+    "meta": {
+      "source": "internal_md",
+      "filename": "runbook_imagepull.md"
+    }
+  },
+  {
+    "id": "runbook_oomkilled",
+    "title": "Runbook Oomkilled",
+    "text": "# OOMKilled runbook\n\nOOMKilled indicates the container exceeded its memory limit.\n\nPatterns observed internally:\n- Memory limits set too low for JVM-based apps\n- Sudden traffic spikes causing memory pressure\n- Missing memory requests causing bad scheduling\n\nTypical checks:\n- kubectl describe pod <pod>\n- Check container memory limits and requests\n\nThis document is reference-only.\n",
+    "meta": {
+      "source": "internal_md",
+      "filename": "runbook_oomkilled.md"
+    }
+  }
+]
