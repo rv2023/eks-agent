@@ -502,6 +502,8 @@ Start server:
 
 ```bash
 python -m eks_agent.server
+uvicorn eks_agent.server:app --host 127.0.0.1 --port 8080
+
 ```
 
 Run CLI:
