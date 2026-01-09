@@ -76,34 +76,6 @@ These are **hard rules**. Violating them is a bug.
 
 ## High-level architecture
 
-```
-
-┌────────────┐
-│    CLI     │
-│ eks_agent  │
-└─────┬──────┘
-│ HTTP (JSON)
-▼
-┌────────────┐
-│ FastAPI    │  eks_agent/server.py
-│ Controller │
-└─────┬──────┘
-│
-├─▶ Session Memory
-│
-├─▶ Internal RAG
-│     ├─ Keyword retrieval
-│     └─ Semantic retrieval (Titan embeddings + local vectors)
-│
-├─▶ LLM (AWS Bedrock / Claude)
-│
-└─▶ Tool Gate (Phase 3)
-│
-▼
-Kubernetes Python SDK (read-only)
-
-```
-
 ---
 
 ## Core design principles
@@ -190,44 +162,6 @@ It helps the agent:
 ## Codebase structure
 
 ```
-
-eks-agent/
-├── cli/
-│   └── eks_agent.py        # Interactive CLI + permission loop
-│
-├── eks_agent/
-│   ├── server.py           # Main FastAPI controller
-│   ├── prompts.py          # System rules & contracts
-│   ├── memory.py           # Session memory
-│   │
-│   ├── rag/
-│   │   ├── embeddings.py   # Titan embedding wrapper
-│   │   ├── vector_store.py # Local SQLite vector DB
-│   │   ├── retrieve.py     # Keyword / hybrid retrieval
-│   │   ├── retrieve_semantic.py
-│   │   └── format.py       # Prompt-safe formatting
-│   │
-│   └── tools/
-│       ├── model.py        # ToolRequest / ToolCall schemas
-│       ├── k8s_client.py   # Kubernetes client init
-│       ├── k8s_reader.py   # Read-only Kubernetes access
-│       ├── gate.py         # Kind validation / forbidden list
-│       └── render.py       # Evidence sanitization
-│
-├── internal_docs/
-│   └── runbook_*.md        # Internal runbooks
-│
-├── scripts/
-│   ├── md_to_internal_docs.py
-│   ├── build_vector_index.py
-│   └── test_semantic.py
-│
-└── runtime/
-└── vector_store.sqlite
-
-````
-
----
 
 ## Control flow (end-to-end)
 
